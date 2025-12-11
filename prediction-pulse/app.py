@@ -36,9 +36,21 @@ st.set_page_config(
 @st.cache_resource
 def get_db_session():
     """Get a cached database session."""
-    engine = get_engine("prediction_pulse.db")
+    import os
+    db_path = os.path.join(os.path.dirname(__file__), "prediction_pulse.db")
+    engine = get_engine(db_path)
     init_db(engine)
-    return get_session(engine)
+    
+    # Auto-seed if database is empty
+    session = get_session(engine)
+    market_count = session.query(Market).count()
+    if market_count == 0:
+        session.close()
+        from seed_sample_data import seed_database
+        seed_database(db_path)
+        session = get_session(engine)
+    
+    return session
 
 
 def load_markets_with_prices(session, category: str = None, status: str = "open") -> pd.DataFrame:
