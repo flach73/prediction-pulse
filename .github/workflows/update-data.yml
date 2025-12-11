@@ -2,13 +2,16 @@ name: Update Market Data
 
 on:
   schedule:
-    # Run every 6 hours
     - cron: '0 */6 * * *'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
+    
+    defaults:
+      run:
+        working-directory: prediction-pulse
     
     steps:
       - name: Checkout repo
@@ -34,9 +37,10 @@ jobs:
         run: python ingest_polymarket.py --limit 100 --quiet
       
       - name: Commit and push database
+        working-directory: .
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
-          git add prediction_pulse.db -f
+          git add prediction-pulse/prediction_pulse.db -f
           git diff --staged --quiet || git commit -m "Auto-update market data [$(date -u '+%Y-%m-%d %H:%M UTC')]"
           git push
