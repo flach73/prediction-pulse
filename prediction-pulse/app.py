@@ -43,6 +43,19 @@ def get_db_session():
     """Get a cached database session."""
     import os
     db_path = os.path.join(os.path.dirname(__file__), "prediction_pulse.db")
+    
+    # Check if database needs migration (source column added)
+    if os.path.exists(db_path):
+        try:
+            engine = get_engine(db_path)
+            session = get_session(engine)
+            # Test if source column exists
+            session.execute("SELECT source FROM markets LIMIT 1")
+            session.close()
+        except:
+            # Old schema - delete and recreate
+            os.remove(db_path)
+    
     engine = get_engine(db_path)
     init_db(engine)
     
@@ -55,6 +68,7 @@ def get_db_session():
         seed_database(db_path)
         session = get_session(engine)
     
+    return session
     return session
 
 
