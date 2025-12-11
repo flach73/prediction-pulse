@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Ingest Kalshi market data into the local database.
+Ingest Polymarket data into the local database.
 
 This ETL script:
-1. Fetches markets from Kalshi API
+1. Fetches markets from Polymarket API
 2. Upserts market and contract metadata
 3. Inserts price snapshots for time-series tracking
 
 Usage:
-    python ingest_kalshi.py                    # Fetch all open markets
-    python ingest_kalshi.py --category politics # Filter by category
-    python ingest_kalshi.py --limit 100        # Limit number of markets
+    python ingest_polymarket.py                    # Fetch all active markets
+    python ingest_polymarket.py --limit 100        # Limit number of markets
 
 Run this periodically (e.g., every 5-10 minutes) to build price history.
 """
@@ -23,10 +22,10 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_upsert
 
 from db import get_engine, get_session, init_db, Market, Contract, Price
-from fetch_kalshi_markets import fetch_markets, parse_market, filter_markets
+from fetch_polymarket import fetch_markets, parse_market, filter_markets
 
 
-SOURCE = "kalshi"
+SOURCE = "polymarket"
 
 
 def utcnow():
@@ -35,8 +34,10 @@ def utcnow():
 
 def upsert_market(session, market_data: dict) -> Market:
     """Insert or update a market record."""
+    market_id = f"poly_{market_data['condition_id']}"
+    
     stmt = sqlite_upsert(Market).values(
-        market_id=market_data["ticker"],
+        market_id=market_id,
         source=SOURCE,
         title=market_data["title"],
         category=market_data.get("category"),
@@ -45,7 +46,6 @@ def upsert_market(session, market_data: dict) -> Market:
         updated_at=utcnow(),
     )
     
-    # On conflict, update everything except created_at
     stmt = stmt.on_conflict_do_update(
         index_elements=["market_id"],
         set_={
@@ -60,19 +60,20 @@ def upsert_market(session, market_data: dict) -> Market:
     session.execute(stmt)
     session.flush()
     
-    # Return the market object
     return session.execute(
-        select(Market).where(Market.market_id == market_data["ticker"])
+        select(Market).where(Market.market_id == market_id)
     ).scalar_one()
 
 
-def upsert_contract(session, market_id: str, ticker: str, side: str = "YES") -> Contract:
+def upsert_contract(session, market_id: str, condition_id: str, side: str = "YES") -> Contract:
     """Insert or update a contract record."""
+    contract_ticker = f"poly_{condition_id}_{side}"
+    
     stmt = sqlite_upsert(Contract).values(
         market_id=market_id,
-        contract_ticker=ticker,
+        contract_ticker=contract_ticker,
         side=side,
-        description=f"{side} contract for {market_id}",
+        description=f"{side} contract",
     )
     
     stmt = stmt.on_conflict_do_update(
@@ -87,7 +88,7 @@ def upsert_contract(session, market_id: str, ticker: str, side: str = "YES") -> 
     session.flush()
     
     return session.execute(
-        select(Contract).where(Contract.contract_ticker == ticker)
+        select(Contract).where(Contract.contract_ticker == contract_ticker)
     ).scalar_one()
 
 
@@ -97,7 +98,7 @@ def insert_price_snapshot(
     bid: Optional[float],
     ask: Optional[float],
     last: Optional[float],
-    volume_24h: Optional[int],
+    volume: Optional[int],
 ) -> Price:
     """Insert a new price snapshot."""
     price = Price(
@@ -106,7 +107,7 @@ def insert_price_snapshot(
         bid_price=bid,
         ask_price=ask,
         last_price=last,
-        volume_24h=volume_24h,
+        volume_24h=volume,
     )
     session.add(price)
     return price
@@ -119,11 +120,9 @@ def ingest_markets(
 ) -> dict:
     """
     Ingest a list of parsed markets into the database.
-    
-    Returns stats about what was ingested.
     """
     engine = get_engine(db_path)
-    init_db(engine)  # Ensure tables exist
+    init_db(engine)
     session = get_session(engine)
     
     stats = {
@@ -135,8 +134,8 @@ def ingest_markets(
     
     try:
         for m in markets:
-            ticker = m.get("ticker")
-            if not ticker:
+            condition_id = m.get("condition_id")
+            if not condition_id:
                 continue
                 
             try:
@@ -144,12 +143,11 @@ def ingest_markets(
                 market = upsert_market(session, m)
                 stats["markets_processed"] += 1
                 
-                # For Kalshi, each market has a YES contract
-                # The ticker is the contract ticker
+                # Create YES contract
                 contract = upsert_contract(
                     session,
                     market_id=market.market_id,
-                    ticker=ticker,
+                    condition_id=condition_id,
                     side="YES",
                 )
                 stats["contracts_processed"] += 1
@@ -158,21 +156,22 @@ def ingest_markets(
                 price = insert_price_snapshot(
                     session,
                     contract_id=contract.id,
-                    bid=m.get("yes_bid"),
-                    ask=m.get("yes_ask"),
-                    last=m.get("last_price"),
-                    volume_24h=m.get("volume_24h"),
+                    bid=None,  # Polymarket doesn't always provide bid/ask
+                    ask=None,
+                    last=m.get("yes_price"),
+                    volume=m.get("volume"),
                 )
                 stats["prices_inserted"] += 1
                 
                 if verbose:
-                    prob = m.get("last_price", "N/A")
-                    print(f"  [Kalshi] {ticker}: {prob}%")
+                    prob = m.get("yes_price", "N/A")
+                    prob_str = f"{prob:.0f}%" if prob else "N/A"
+                    print(f"  [Polymarket] {condition_id[:20]}: {prob_str}")
                     
             except Exception as e:
-                stats["errors"].append(f"{ticker}: {str(e)}")
+                stats["errors"].append(f"{condition_id}: {str(e)}")
                 if verbose:
-                    print(f"  [Kalshi] {ticker}: ERROR - {e}")
+                    print(f"  [Polymarket] {condition_id}: ERROR - {e}")
         
         session.commit()
         
@@ -188,7 +187,7 @@ def ingest_markets(
 def print_summary(stats: dict):
     """Print ingestion summary."""
     print(f"\n{'='*50}")
-    print("Kalshi Ingestion Summary")
+    print("Polymarket Ingestion Summary")
     print(f"{'='*50}")
     print(f"Markets processed:  {stats['markets_processed']}")
     print(f"Contracts processed: {stats['contracts_processed']}")
@@ -203,23 +202,22 @@ def print_summary(stats: dict):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Ingest Kalshi data into database")
+    parser = argparse.ArgumentParser(description="Ingest Polymarket data into database")
     parser.add_argument("--limit", type=int, default=100, help="Max markets to fetch")
     parser.add_argument("--category", type=str, help="Filter by category")
-    parser.add_argument("--min-volume", type=int, help="Minimum 24h volume")
+    parser.add_argument("--min-volume", type=int, help="Minimum volume")
     parser.add_argument("--db", type=str, default="prediction_pulse.db", help="Database path")
     parser.add_argument("--quiet", action="store_true", help="Suppress per-market output")
     args = parser.parse_args()
 
-    print(f"Starting Kalshi ingestion at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Starting Polymarket ingestion at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Database: {args.db}")
     print()
 
     # Fetch from API
-    print("Fetching markets from Kalshi API...")
+    print("Fetching markets from Polymarket API...")
     try:
-        response = fetch_markets(limit=args.limit, status="open")
-        raw_markets = response.get("markets", [])
+        raw_markets = fetch_markets(limit=args.limit, active=True)
         print(f"Fetched {len(raw_markets)} markets from API")
     except Exception as e:
         print(f"Error fetching from API: {e}")

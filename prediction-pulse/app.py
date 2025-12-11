@@ -2,10 +2,11 @@
 """
 Prediction Pulse Dashboard
 
-A Streamlit app that displays prediction market data from the local database.
+A Streamlit app that displays prediction market data from multiple sources.
 
 Features:
 - Table of current markets with implied probabilities
+- Filter by source (Kalshi, Polymarket)
 - Filter by category and expiration
 - Click to see price history charts
 - Auto-refresh option
@@ -18,7 +19,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from sqlalchemy import select, func, desc
 
 from db import get_engine, get_session, init_db, Market, Contract, Price
@@ -31,6 +32,10 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
 
 
 @st.cache_resource
@@ -53,7 +58,12 @@ def get_db_session():
     return session
 
 
-def load_markets_with_prices(session, category: str = None, status: str = "open") -> pd.DataFrame:
+def load_markets_with_prices(
+    session,
+    category: str = None,
+    status: str = "open",
+    source: str = None,
+) -> pd.DataFrame:
     """Load all markets with their latest price data."""
     
     # Subquery to get latest price per contract
@@ -70,6 +80,7 @@ def load_markets_with_prices(session, category: str = None, status: str = "open"
     query = (
         select(
             Market.market_id,
+            Market.source,
             Market.title,
             Market.category,
             Market.status,
@@ -90,9 +101,11 @@ def load_markets_with_prices(session, category: str = None, status: str = "open"
     
     # Apply filters
     if status:
-        query = query.where(Market.status == status)
+        query = query.where(Market.status.in_(["open", "active"]))
     if category and category != "All":
         query = query.where(Market.category.ilike(f"%{category}%"))
+    if source and source != "All":
+        query = query.where(Market.source == source.lower())
     
     query = query.order_by(desc(Price.volume_24h))
     
@@ -104,7 +117,7 @@ def load_markets_with_prices(session, category: str = None, status: str = "open"
         return pd.DataFrame()
     
     df.columns = [
-        "market_id", "title", "category", "status", "expiry_ts", "updated_at",
+        "market_id", "source", "title", "category", "status", "expiry_ts", "updated_at",
         "contract_ticker", "side", "last_price", "bid_price", "ask_price", 
         "volume_24h", "price_timestamp"
     ]
@@ -115,7 +128,7 @@ def load_markets_with_prices(session, category: str = None, status: str = "open"
 def load_price_history(session, contract_ticker: str, days: int = 7) -> pd.DataFrame:
     """Load price history for a specific contract."""
     
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = utcnow() - timedelta(days=days)
     
     query = (
         select(
@@ -149,10 +162,26 @@ def get_categories(session) -> list[str]:
     return ["All"] + sorted(categories)
 
 
+def get_sources(session) -> list[str]:
+    """Get unique sources from database."""
+    query = select(Market.source).distinct().where(Market.source.isnot(None))
+    result = session.execute(query)
+    sources = [r[0] for r in result.fetchall() if r[0]]
+    return ["All"] + sorted([s.capitalize() for s in sources])
+
+
 def render_sidebar(session):
     """Render the sidebar with filters."""
     st.sidebar.title("🎯 Prediction Pulse")
     st.sidebar.markdown("---")
+    
+    # Source filter
+    sources = get_sources(session)
+    selected_source = st.sidebar.selectbox(
+        "Source",
+        options=sources,
+        index=0,
+    )
     
     # Category filter
     categories = get_categories(session)
@@ -178,11 +207,12 @@ def render_sidebar(session):
     # Info
     st.sidebar.markdown("---")
     st.sidebar.caption(
-        "Data from Kalshi prediction markets. "
+        "Data from Kalshi and Polymarket. "
         "Prices represent implied probability (0-100%)."
     )
     
     return {
+        "source": selected_source,
         "category": selected_category,
         "status": status,
         "future_only": future_only,
@@ -194,7 +224,7 @@ def render_market_table(df: pd.DataFrame) -> str | None:
     
     if df.empty:
         st.warning("No markets found. Run the ingestion script first:")
-        st.code("python ingest_kalshi.py")
+        st.code("python ingest_all.py")
         return None
     
     # Prepare display dataframe
@@ -216,10 +246,13 @@ def render_market_table(df: pd.DataFrame) -> str | None:
     display_df["Expiry"] = display_df["expiry_ts"].apply(
         lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else "N/A"
     )
+    display_df["Source"] = display_df["source"].apply(
+        lambda x: x.capitalize() if x else "N/A"
+    )
     
     # Select columns for display
     table_df = display_df[[
-        "title", "Probability", "Bid/Ask", "Volume (24h)", "Expiry", "category", "contract_ticker"
+        "Source", "title", "Probability", "Bid/Ask", "Volume (24h)", "Expiry", "category", "contract_ticker"
     ]].rename(columns={
         "title": "Market",
         "category": "Category",
@@ -235,6 +268,7 @@ def render_market_table(df: pd.DataFrame) -> str | None:
         use_container_width=True,
         hide_index=True,
         column_config={
+            "Source": st.column_config.TextColumn("Source", width="small"),
             "Market": st.column_config.TextColumn("Market", width="large"),
             "Probability": st.column_config.TextColumn("Prob", width="small"),
             "Bid/Ask": st.column_config.TextColumn("Bid/Ask", width="small"),
@@ -249,10 +283,21 @@ def render_market_table(df: pd.DataFrame) -> str | None:
     # Market selector dropdown
     st.markdown("---")
     ticker_options = ["Select a market..."] + display_df["contract_ticker"].tolist()
+    
+    def format_option(x):
+        if x == "Select a market...":
+            return x
+        row = display_df[display_df['contract_ticker']==x]
+        if len(row) > 0:
+            source = row['source'].iloc[0].capitalize()
+            title = row['title'].iloc[0][:45]
+            return f"[{source}] {x} - {title}..."
+        return x
+    
     selected_ticker = st.selectbox(
         "Select market to view price history:",
         options=ticker_options,
-        format_func=lambda x: x if x == "Select a market..." else f"{x} - {display_df[display_df['contract_ticker']==x]['title'].iloc[0][:50]}..."
+        format_func=format_option
     )
     
     if selected_ticker != "Select a market...":
@@ -260,10 +305,11 @@ def render_market_table(df: pd.DataFrame) -> str | None:
     return None
 
 
-def render_price_chart(session, ticker: str, market_title: str):
+def render_price_chart(session, ticker: str, market_title: str, source: str):
     """Render price history chart for a market."""
     
-    st.subheader(f"📊 Price History: {market_title[:60]}...")
+    source_label = source.capitalize() if source else "Unknown"
+    st.subheader(f"📊 [{source_label}] Price History: {market_title[:50]}...")
     
     # Time range selector
     days = st.selectbox("Time range", [1, 7, 14, 30], index=1, format_func=lambda x: f"{x} day{'s' if x > 1 else ''}")
@@ -348,18 +394,20 @@ def main():
     
     # Main content
     st.title("Prediction Pulse")
-    st.caption("Real-time prediction market data from Kalshi")
+    st.caption("Real-time prediction market data from Kalshi & Polymarket")
     
     # Load and display markets
     df = load_markets_with_prices(
         session,
         category=filters["category"],
         status=filters["status"],
+        source=filters["source"],
     )
     
-    # Filter by future expiry if selected
+  # Filter by future expiry if selected
     if filters["future_only"] and not df.empty:
-        now = datetime.utcnow()
+        now = pd.Timestamp.utcnow().tz_localize(None)
+        df["expiry_ts"] = pd.to_datetime(df["expiry_ts"]).dt.tz_localize(None)
         df = df[df["expiry_ts"].isna() | (df["expiry_ts"] > now)]
     
     # Show market table and get selection
@@ -368,7 +416,7 @@ def main():
     # Show price chart if market selected
     if selected_ticker and not df.empty:
         market_row = df[df["contract_ticker"] == selected_ticker].iloc[0]
-        render_price_chart(session, selected_ticker, market_row["title"])
+        render_price_chart(session, selected_ticker, market_row["title"], market_row["source"])
 
 
 if __name__ == "__main__":

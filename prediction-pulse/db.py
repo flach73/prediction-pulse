@@ -7,7 +7,7 @@ Three-table schema:
 - prices: time-series snapshots of prices
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     create_engine,
     Column,
@@ -23,25 +23,31 @@ from sqlalchemy.orm import declarative_base, relationship, sessionmaker
 Base = declarative_base()
 
 
+def utcnow():
+    """Get current UTC time (timezone-aware)."""
+    return datetime.now(timezone.utc)
+
+
 class Market(Base):
     """A prediction market (e.g., 'Will X happen by Y date?')"""
     
     __tablename__ = "markets"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    market_id = Column(String, unique=True, nullable=False, index=True)  # Kalshi's ID
+    market_id = Column(String, unique=True, nullable=False, index=True)  # Source's ID
+    source = Column(String, nullable=False, default="kalshi", index=True)  # kalshi, polymarket
     title = Column(String, nullable=False)
     category = Column(String, nullable=True)
     status = Column(String, default="open")  # open, closed, settled
     expiry_ts = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)
 
     # Relationships
     contracts = relationship("Contract", back_populates="market", cascade="all, delete-orphan")
 
     def __repr__(self):
-        return f"<Market(market_id='{self.market_id}', title='{self.title[:30]}...')>"
+        return f"<Market(source='{self.source}', market_id='{self.market_id}', title='{self.title[:30]}...')>"
 
 
 class Contract(Base):
@@ -51,10 +57,10 @@ class Contract(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     market_id = Column(String, ForeignKey("markets.market_id"), nullable=False, index=True)
-    contract_ticker = Column(String, unique=True, nullable=False, index=True)  # Kalshi's ticker
+    contract_ticker = Column(String, unique=True, nullable=False, index=True)  # Source's ticker
     side = Column(String, nullable=True)  # YES, NO, or specific outcome
     description = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=utcnow)
 
     # Relationships
     market = relationship("Market", back_populates="contracts")
@@ -71,7 +77,7 @@ class Price(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     contract_id = Column(Integer, ForeignKey("contracts.id"), nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    timestamp = Column(DateTime, default=utcnow, index=True)
     bid_price = Column(Float, nullable=True)  # Highest bid (cents)
     ask_price = Column(Float, nullable=True)  # Lowest ask (cents)
     last_price = Column(Float, nullable=True)  # Last trade price (cents)
@@ -92,7 +98,7 @@ class Price(Base):
     def implied_probability(self) -> float | None:
         """Convert last_price (in cents) to implied probability (0-100%)"""
         if self.last_price is not None:
-            return self.last_price  # Kalshi prices are already in cents (0-100)
+            return self.last_price  # Prices are already in cents (0-100)
         return None
 
 
