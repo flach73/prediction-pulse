@@ -46,11 +46,8 @@ def get_db_session():
     
     # Check if database needs migration (source column added)
     if os.path.exists(db_path):
-        try:
-            engine = get_engine(db_path)
-            session = get_session(engine)
-            # Test if source column exists
-            session.execute("SELECT source FROM markets LIMIT 1")
+        from sqlalchemy import text
+            session.execute(text("SELECT source FROM markets LIMIT 1"))
             session.close()
         except:
             # Old schema - delete and recreate
