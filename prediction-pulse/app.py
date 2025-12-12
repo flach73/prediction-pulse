@@ -42,11 +42,15 @@ def utcnow():
 def get_db_session():
     """Get a cached database session."""
     import os
+    from sqlalchemy import text
     db_path = os.path.join(os.path.dirname(__file__), "prediction_pulse.db")
     
     # Check if database needs migration (source column added)
     if os.path.exists(db_path):
-        from sqlalchemy import text
+        try:
+            engine = get_engine(db_path)
+            session = get_session(engine)
+            # Test if source column exists
             session.execute(text("SELECT source FROM markets LIMIT 1"))
             session.close()
         except:
@@ -65,7 +69,6 @@ def get_db_session():
         seed_database(db_path)
         session = get_session(engine)
     
-    return session
     return session
 
 
