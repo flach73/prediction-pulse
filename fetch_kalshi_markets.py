@@ -80,32 +80,6 @@ def fetch_market_detail(ticker: str) -> dict:
     return response.json()
 
 
-def infer_category(title: str) -> str:
-    """Infer category from market title keywords."""
-    title_lower = title.lower()
-    
-    if any(word in title_lower for word in ['president', 'election', 'congress', 'senate', 'governor', 'trump', 'biden', 'republican', 'democrat', 'vote', 'party', 'nominee']):
-        return 'Politics'
-    elif any(word in title_lower for word in ['bitcoin', 'btc', 'ethereum', 'eth', 'crypto', 'coin', 'solana', 'dogecoin']):
-        return 'Crypto'
-    elif any(word in title_lower for word in ['fed', 'rate', 'gdp', 'inflation', 'unemployment', 'recession', 'economy', 'economic', 'tariff']):
-        return 'Economics'
-    elif any(word in title_lower for word in ['s&p', 'stock', 'nasdaq', 'dow', 'market', 'trading', 'ipo']):
-        return 'Markets'
-    elif any(word in title_lower for word in ['climate', 'temperature', 'warming', 'weather', 'hurricane']):
-        return 'Climate'
-    elif any(word in title_lower for word in ['pope', 'israel', 'ukraine', 'russia', 'china', 'war', 'minister', 'leader', 'putin', 'zelensky', 'prime minister']):
-        return 'World'
-    elif any(word in title_lower for word in ['mars', 'space', 'nasa', 'rocket', 'moon', 'spacex', 'ai', 'gpt', 'artificial intelligence', 'quantum']):
-        return 'Science'
-    elif any(word in title_lower for word in ['super bowl', 'nfl', 'nba', 'mlb', 'sports', 'championship', 'world series', 'playoffs']):
-        return 'Sports'
-    elif any(word in title_lower for word in ['oscar', 'grammy', 'emmy', 'movie', 'film', 'album', 'celebrity']):
-        return 'Entertainment'
-    else:
-        return 'Other'
-
-
 def parse_market(raw: dict) -> dict:
     """
     Parse a raw Kalshi market response into a cleaner format.
@@ -122,21 +96,11 @@ def parse_market(raw: dict) -> dict:
     else:
         expiry = None
 
-    # Get title
-    title = raw.get("title") or raw.get("subtitle") or ""
-    
-    # Get category - use API category if available, otherwise infer from title
-    api_category = raw.get("category")
-    if api_category and api_category.strip():
-        category = api_category
-    else:
-        category = infer_category(title)
-
     return {
         "ticker": raw.get("ticker"),
         "event_ticker": raw.get("event_ticker"),
-        "title": title,
-        "category": category,
+        "title": raw.get("title") or raw.get("subtitle"),
+        "category": raw.get("category"),
         "status": raw.get("status"),
         "expiry": expiry,
         # Price data (in cents = probability %)
@@ -199,12 +163,11 @@ def display_markets(markets: list[dict], detailed: bool = False):
             
         expiry = m.get("expiry")
         expiry_str = expiry.strftime("%Y-%m-%d") if expiry else "N/A"
-        category = m.get("category", "N/A")
         
-        print(f"{i:3}. [{m.get('ticker', 'N/A'):20}] {prob_str:>5} | [{category:12}] {m.get('title', 'No title')[:40]}")
+        print(f"{i:3}. [{m.get('ticker', 'N/A'):20}] {prob_str:>5} | {m.get('title', 'No title')[:50]}")
         
         if detailed:
-            print(f"     Category: {category}")
+            print(f"     Category: {m.get('category', 'N/A')}")
             print(f"     Expiry: {expiry_str}")
             print(f"     Volume 24h: {m.get('volume_24h', 'N/A')}")
             print(f"     Bid/Ask: {m.get('yes_bid', 'N/A')}/{m.get('yes_ask', 'N/A')}")

@@ -52,46 +52,6 @@ def fetch_market_detail(condition_id: str) -> dict:
     return response.json()
 
 
-def infer_category(title: str) -> str:
-    """Infer category from market title keywords."""
-    title_lower = title.lower()
-    
-    if any(word in title_lower for word in ['president', 'election', 'congress', 'senate', 'governor', 'trump', 'biden', 'republican', 'democrat', 'vote', 'party', 'nominee']):
-        return 'Politics'
-    elif any(word in title_lower for word in ['bitcoin', 'btc', 'ethereum', 'eth', 'crypto', 'coin', 'solana', 'dogecoin']):
-        return 'Crypto'
-    elif any(word in title_lower for word in ['fed', 'rate', 'gdp', 'inflation', 'unemployment', 'recession', 'economy', 'economic', 'tariff']):
-        return 'Economics'
-    elif any(word in title_lower for word in ['s&p', 'stock', 'nasdaq', 'dow', 'market', 'trading', 'ipo']):
-        return 'Markets'
-    elif any(word in title_lower for word in ['climate', 'temperature', 'warming', 'weather', 'hurricane']):
-        return 'Climate'
-    elif any(word in title_lower for word in ['pope', 'israel', 'ukraine', 'russia', 'china', 'war', 'minister', 'leader', 'putin', 'zelensky']):
-        return 'World'
-    elif any(word in title_lower for word in ['mars', 'space', 'nasa', 'rocket', 'moon', 'spacex', 'ai', 'gpt', 'artificial intelligence']):
-        return 'Science'
-    elif any(word in title_lower for word in ['super bowl', 'nfl', 'nba', 'mlb', 'sports', 'championship', 'world series', 'playoffs']):
-        return 'Sports'
-    elif any(word in title_lower for word in ['oscar', 'grammy', 'emmy', 'movie', 'film', 'album', 'celebrity']):
-        return 'Entertainment'
-    else:
-        return 'Other'
-
-
-def extract_category(tags: list) -> str | None:
-    """Extract a category from tags list."""
-    if not tags:
-        return None
-    # Common category tags
-    category_keywords = ["politics", "crypto", "sports", "science", "entertainment", "economics"]
-    for tag in tags:
-        tag_lower = tag.lower() if isinstance(tag, str) else ""
-        for keyword in category_keywords:
-            if keyword in tag_lower:
-                return keyword.capitalize()
-    return tags[0] if tags else None
-
-
 def parse_market(raw: dict) -> dict:
     """
     Parse a raw Polymarket market response into a cleaner format.
@@ -140,15 +100,12 @@ def parse_market(raw: dict) -> dict:
         except (ValueError, TypeError):
             volume = None
 
-    # Get title
-    title = raw.get("question") or raw.get("title") or ""
-
     return {
         "condition_id": raw.get("conditionId") or raw.get("condition_id"),
         "question_id": raw.get("questionId") or raw.get("question_id"),
         "slug": raw.get("slug"),
-        "title": title,
-        "category": raw.get("category") or extract_category(raw.get("tags", [])) or infer_category(title),
+        "title": raw.get("question") or raw.get("title"),
+        "category": raw.get("category") or extract_category(raw.get("tags", [])),
         "status": "open" if raw.get("active") else "closed",
         "expiry": expiry,
         "yes_price": yes_price,
@@ -156,6 +113,20 @@ def parse_market(raw: dict) -> dict:
         "liquidity": raw.get("liquidity"),
         "outcomes": raw.get("outcomes"),
     }
+
+
+def extract_category(tags: list) -> str | None:
+    """Extract a category from tags list."""
+    if not tags:
+        return None
+    # Common category tags
+    category_keywords = ["politics", "crypto", "sports", "science", "entertainment", "economics"]
+    for tag in tags:
+        tag_lower = tag.lower() if isinstance(tag, str) else ""
+        for keyword in category_keywords:
+            if keyword in tag_lower:
+                return keyword.capitalize()
+    return tags[0] if tags else None
 
 
 def filter_markets(
@@ -218,12 +189,11 @@ def display_markets(markets: list[dict], detailed: bool = False):
         
         title = m.get("title", "No title")[:50]
         condition_id = m.get("condition_id", "N/A")[:20]
-        category = m.get("category", "N/A")
         
-        print(f"{i:3}. [{condition_id:20}] {prob_str:>5} | [{category:12}] {title}")
+        print(f"{i:3}. [{condition_id:20}] {prob_str:>5} | {title}")
         
         if detailed:
-            print(f"     Category: {category}")
+            print(f"     Category: {m.get('category', 'N/A')}")
             print(f"     Expiry: {expiry_str}")
             print(f"     Volume: ${m.get('volume', 'N/A'):,}" if m.get('volume') else "     Volume: N/A")
             print()
